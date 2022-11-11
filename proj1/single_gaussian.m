@@ -1,0 +1,214 @@
+
+%  Loop through the images
+myDir = ".//train_images/";
+myFiles = dir(fullfile(myDir));
+
+
+%calculate the single_gaussian
+
+% initialize the number of pixels that will have a greater than zero value in the mask
+num_orange_pixels = 0;
+
+% initialize the list of all pixels with at least one value greater than zero
+orange_pixels = [];
+
+% initialize the empirical mean (also written as mu)
+empirical_mean = [uint32(0),uint32(0),uint32(0)];
+
+% for each image in the training set
+for k = 1:length(myFiles)
+    baseFileName = myFiles(k).name;
+    if contains(baseFileName, "jpg")
+        % Load the images
+        fullFileName = fullfile(myDir, baseFileName);
+        A = imread(fullFileName);
+
+        % Convert RGB image to chosen color space
+        I = rgb2hsv(A);
+
+        % Define thresholds for channel 1 based on histogram settings
+        channel1Min = 0.674;
+        channel1Max = 0.066;
+
+        % Define thresholds for channel 2 based on histogram settings
+        channel2Min = 0.171;
+        channel2Max = 0.813;
+
+        % Define thresholds for channel 3 based on histogram settings
+        channel3Min = 0.587;
+        channel3Max = 1.000;
+
+        % Create mask based on chosen histogram thresholds
+        % Layer 1= I(:,:,1)= Red, Layer 2 = Green, Layer 3 = Blue, making
+        % array based on all digits not in histogram thresholds to be 0.
+        % All digits in threshold are 1's. Not entirely black & white, now 2D.
+
+        sliderBW = ( (I(:,:,1) >= channel1Min) | (I(:,:,1) <= channel1Max) ) & ...
+            (I(:,:,2) >= channel2Min ) & (I(:,:,2) <= channel2Max) & ...
+            (I(:,:,3) >= channel3Min ) & (I(:,:,3) <= channel3Max);
+        BW = sliderBW;
+
+        % Initialize output masked image based on input image.
+        maskedRGBImage = A;
+
+        % Set background pixels where BW is false to zero (~BW).
+        % BW is inverted so 1's are now zero and zero's are now 1's.
+        % Replicated BW into three layers. now 3D.
+        % Image is 640x480x3
+        stackedBW = repmat(~BW,[1 1 3]);
+
+        % Image is 640x480x3. All pixels that are not in RBG range set to
+        % 0. Non zero digits are now histogram value form.
+        % (black).
+
+        maskedRGBImage(stackedBW) = 0;
+
+%         imshow(maskedRGBImage)
+
+        % Extracting RGB values
+        R = maskedRGBImage(:,:,1);
+        G = maskedRGBImage(:,:,2);
+        B = maskedRGBImage(:,:,3);
+
+        % loop through all the pixels in the mask
+        for x = 1:640
+            for y = 1:480
+                % if any of the pixels has a color value greater than zero
+                if maskedRGBImage(x,y,1) > 0 || maskedRGBImage(x,y,2) > 0 || maskedRGBImage(x,y,3) > 0
+
+                    % add the colors in this pixel to the sum
+                    % creating mean of all red parts of the pixels
+                    empirical_mean(1) = empirical_mean(1) + uint32(maskedRGBImage(x,y,1));
+                    % creating mean of all green parts of the pixels
+                    empirical_mean(2) = empirical_mean(2) + uint32(maskedRGBImage(x,y,2));
+                    % creating mean of all blue parts of the pixels
+                    empirical_mean(3) = empirical_mean(3) + uint32(maskedRGBImage(x,y,3));
+                    % orange pixels is a list of orange pixel rbg values.
+                    orange_pixels(end+1,:) = maskedRGBImage(x,y,:);
+                end
+            end
+        end
+    end
+end
+
+
+%fullFileName = fullfile(myDir, baseFileName);
+%A = imread(fullFileName);
+
+
+% divide the sums of each color by the number of pixels to get the mean
+
+% red values of the orange pixels
+empirical_mean(1) = empirical_mean(1)/length(orange_pixels);
+% green values of the orange pixels
+empirical_mean(2) = empirical_mean(2)/length(orange_pixels);
+% blue values of the orange pixels
+empirical_mean(3) = empirical_mean(3)/length(orange_pixels);
+empirical_mean = double(empirical_mean);
+% empirical_mean is now the mean of all greater than zero pixels in all training samples
+
+% calculate covariance matrix
+covariance_matrix = cov(orange_pixels);
+
+% get individual arrays for each RGB color value in the orange pixels
+R = double(orange_pixels(:,1));
+G = double(orange_pixels(:,2));
+B = double(orange_pixels(:,3));
+
+% probability of any given label being orange
+prior = 0.5;
+
+% an example of an orange pixel for testing purposes
+x = [2, 255, 0.0];
+
+% probability of being a certain color, given label orange
+numerator = exp(-.5 * (x - empirical_mean) * inv(covariance_matrix) * (x - empirical_mean)');
+denominator = sqrt((2*pi)^3 * det(covariance_matrix));
+likelihood = (numerator/denominator);
+disp(likelihood);
+
+
+myDir = ".//test_images/";
+myFiles = dir(fullfile(myDir));
+
+for k = 1:length(myFiles)
+    baseFileName = myFiles(k).name;
+    if contains(baseFileName, "jpg")
+        % Load the images
+        fullFileName = fullfile(myDir, baseFileName);
+        image = imread(fullFileName);
+        final_image = apply_simple_gaussian(image, empirical_mean, covariance_matrix);
+        
+        path = strcat("./outputs/single_gauss/",baseFileName);
+        final_output = imfuse( image, final_image, 'montage');
+        imwrite(final_output,path);
+       
+    end
+end
+
+
+
+% This is the final function used to mask the images based on simple
+% gaussian color correction. Here, p(Cl|x) is calculated.
+
+function image_based_on_simple_gaussian = apply_simple_gaussian(image, empirical_mean, covariance_matrix)
+
+%threshold for accuracy
+threshold = 0.0000005;
+prior = 0.5;
+[rows, columns, numberOfColorChannels] = size(image);
+
+for row = 1:rows
+    for col = 1:columns
+        % pixelRGB is an array of three values: red value, green
+        % values, and blue, respectively
+
+        pixelRGB = [image(row, col, 1), image(row, col, 2), image(row, col, 3)];
+
+        % probability pixel is orange given label orange
+        likelihood_orange = p_x_cl_i(pixelRGB, empirical_mean, covariance_matrix);
+
+        %'l' is the number of colors, in our case being orange or not orange.
+        %p_Ci is the probability that a pixel is not orange, we assumed this is 50%
+        % The last two multiplied terms are probability not orange * 1/2 plus
+        % probability orange * 1/2
+        % Probability is being calculated per pixel
+
+
+        % get p_cl_x for this pixel at given row and column
+        p_cl_x = ((likelihood_orange)*(prior))/((1 - likelihood_orange)*(1-prior) + (likelihood_orange)*(prior));
+
+        % if under the threshold, make pixel black
+        if p_cl_x < threshold
+            image(row, col, :) = 0;
+            %disp(p_cl_x);
+
+        end
+        
+        % else, do nothing
+        % showing all images
+        image_based_on_simple_gaussian = image;
+        
+    end
+end
+
+%showing the masked images based on the simple guassian formula for color
+%classification
+
+% imshow(image);
+end
+
+% calculating this formula: this is p(x|Orange). This will be used an an
+% input for calculating p(Cl|x), our image_based_on_simple_gaussian
+% function. 
+
+function likelihood_actual_color_for_orange = p_x_cl_i(pixelRGB, empirical_mean, cov_matrix)
+pixelRGB = double(pixelRGB);
+% probability of being a certain color, given label orange
+numerator = exp(-.5 * (pixelRGB - empirical_mean) * inv(cov_matrix) * (pixelRGB - empirical_mean)');
+denominator = sqrt((2*pi)^3 * det(cov_matrix));
+likelihood_actual_color_for_orange = (numerator/denominator);
+
+end
+
+
